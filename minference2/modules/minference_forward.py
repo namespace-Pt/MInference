@@ -121,14 +121,21 @@ def search_pattern(q, k, head):
     q_len = q.shape[2]
     head_dim = q.shape[-1]
 
+    # q: batch_size, head_num, q_len, head_dim
+    # k: batch_size, head_num, q_len, head_dim
+
     def vertical_and_slash(vertical_size, slash_size):
         last_q = 64
         q_len = q.shape[2]
         qk_idxs = [ii + q_len for ii in list(range(-last_q, 0, 1))]
+        # qk: batch_size, head_num, last_q, q_len
         qk = torch.matmul(q[:,:,qk_idxs,:], k.transpose(2, 3))/ math.sqrt(head_dim) + attention_mask[:,:,qk_idxs]
         qk = torch.nn.functional.softmax(qk, dim=-1, dtype=torch.float32)
+        # vertical: batch_size, head_num, 1, q_len
         vertical = qk.sum(-2, keepdim=True)
+        # the first 30 positions are always vertical
         vertical[...,:30] = torch.inf
+        # choose q_len-vertical_size least important columns
         vertical_topk = torch.topk(-vertical, q_len - vertical_size, -1).indices
 
         slash = sum_all_diagonal_matrix(qk)[...,:-last_q + 1]

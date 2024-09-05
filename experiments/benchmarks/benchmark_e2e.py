@@ -37,13 +37,15 @@ def run_target_length(m: int, model, attn_type: str):
                 )
         torch.cuda.synchronize()
         s += time.time() - start
-    print(attn_type, m, s / T)
-    return s / T
+    memory = torch.cuda.max_memory_allocated() / 1024**3
+    return s / T, memory
 
 
-def run_benchmark(model_name: str):
-    TARGET_LENS = [l * 1000 for l in [10, 50, 100, 200, 300, 500, 1000]]
-    ATTN_TYPES = ["minference_with_dense", "streaming", "minference"]
+def run_benchmark(model_name: str, model_name_or_path: str):
+    # TARGET_LENS = [l * 1000 for l in [10, 50, 100, 200, 300, 500, 1000]]
+    # ATTN_TYPES = ["minference_with_dense", "streaming", "minference"]
+    TARGET_LENS = [l * 1000 for l in [10, 50, 100, 200, 500]]
+    ATTN_TYPES = ["minference_with_dense", "minference"]
     ATTN_TYPES2NAME = {
         "minference_with_dense": "FlashAttention-2",
         "streaming": "StreamingLLM",
@@ -51,10 +53,11 @@ def run_benchmark(model_name: str):
         "minference": "MInference",
     }
     latency = defaultdict(list)
+    memory = defaultdict(list)
 
     for attn_type in ATTN_TYPES:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            model_name_or_path,
             torch_dtype="auto",
             device_map="auto",
         )
@@ -69,18 +72,28 @@ def run_benchmark(model_name: str):
                 minference_patch = MInference(attn_type, model_name, kv_cache_cpu=True)
                 model = minference_patch(model)
 
-            t = run_target_length(l, model, attn_type)
+            t, mem = run_target_length(l, model, attn_type)
             latency[ATTN_TYPES2NAME[attn_type]].append([l, f"{t:.5f}"])
-            print(attn_type, t, l)
+            memory[ATTN_TYPES2NAME[attn_type]].append([l, f"{mem:.5f}"])
+            print(attn_type, l, t, mem)
             torch.cuda.empty_cache()
 
-    res = [[""] + [ATTN_TYPES2NAME[attn_type] for attn_type in ATTN_TYPES]]
+    res = [["LATENCY"] + [ATTN_TYPES2NAME[attn_type] for attn_type in ATTN_TYPES]]
     for idx in range(len(TARGET_LENS)):
         l = TARGET_LENS[idx]
         res.append(
             [f"{l//1000}K"]
             + [latency[ATTN_TYPES2NAME[attn_type]][idx][-1] for attn_type in ATTN_TYPES]
         )
+
+    res.append(["MEMORY"] + [ATTN_TYPES2NAME[attn_type] for attn_type in ATTN_TYPES])
+    for idx in range(len(TARGET_LENS)):
+        l = TARGET_LENS[idx]
+        res.append(
+            [f"{l//1000}K"]
+            + [memory[ATTN_TYPES2NAME[attn_type]][idx][-1] for attn_type in ATTN_TYPES]
+        )
+
     print("\n".join(["\t".join(ii) for ii in res]))
     with open("res.csv", "w") as f:
         f.write("\n".join(["\t".join(ii) for ii in res]))
@@ -93,6 +106,11 @@ if __name__ == "__main__":
         "--model_name",
         type=str,
         default="gradientai/Llama-3-8B-Instruct-Gradient-1048k",
+    )
+    args.add_argument(
+        "--model_name_or_path",
+        type=str,
+        default="/share/peitian/Data/shared_models/llama-3-8b-instruct-262k",
     )
     args.add_argument(
         "--attn_type",
@@ -112,14 +130,15 @@ if __name__ == "__main__":
     args = args.parse_args()
 
     model_name = args.model_name
+    model_name_or_path = args.model_name_or_path
     tokenizer = AutoTokenizer.from_pretrained(
-        model_name, trust_remote_code=args.trust_remote_code
+        model_name_or_path, trust_remote_code=args.trust_remote_code
     )
     if args.run_benchmark:
-        run_benchmark(model_name)
+        run_benchmark(model_name, model_name_or_path)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_name,
+            model_name_or_path,
             torch_dtype="auto",
             device_map="auto",
             trust_remote_code=args.trust_remote_code,
